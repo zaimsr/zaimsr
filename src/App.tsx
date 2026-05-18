@@ -72,12 +72,25 @@ export default function App() {
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
+  const [error, setError] = useState<string | null>(null);
+
   // Fetch initial state
   const fetchStatus = async () => {
+    console.log("[Client] Fetching status...");
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
     try {
-      const response = await fetch("/api/status");
+      const response = await fetch("/api/status", { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
+      
+      if (!data || !data.sensors) throw new Error("Invalid data received from server");
+
       setState(data);
+      setError(null);
       
       // Update history for graphs
       setHistory(prev => {
@@ -91,10 +104,13 @@ export default function App() {
       });
       
       setLoading(false);
-    } catch (error) {
-      console.error("Error fetching status:", error);
-      // We don't toast error on interval polling to avoid spamming
-      if (loading) toast.error("Gagal terhubung ke server backend");
+    } catch (e: any) {
+      console.error("[Client] Error fetching status:", e);
+      if (e.name === 'AbortError') {
+        setError("Request timeout. Server is slow to respond.");
+      } else {
+        setError(e.message || "Gagal terhubung ke backend");
+      }
     }
   };
 
@@ -176,15 +192,82 @@ export default function App() {
 
   if (loading && !state) {
     return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-slate-50">
-        <motion.div 
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="mb-4"
-        >
-          <RefreshCw className="w-12 h-12 text-primary" />
-        </motion.div>
-        <p className="text-muted-foreground font-medium">Menghubungkan ke IoT Dashboard...</p>
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0A0A0C] text-white p-4 text-center">
+        <Toaster position="top-right" richColors />
+        <AnimatePresence mode="wait">
+          {!error ? (
+            <motion.div 
+              key="loading"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="flex flex-col items-center"
+            >
+              <div className="relative">
+                <motion.div 
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+                  className="mb-8"
+                >
+                  <RefreshCw className="w-16 h-16 text-[#FF6321]" />
+                </motion.div>
+                <motion.div 
+                  className="absolute inset-0 flex items-center justify-center"
+                  animate={{ scale: [1, 1.2, 1] }}
+                  transition={{ duration: 2, repeat: Infinity }}
+                >
+                  <Zap className="w-6 h-6 text-[#FF6321] opacity-50" />
+                </motion.div>
+              </div>
+              <h2 className="text-xl font-bold mb-2">Connecting to SmartNode... v2.1</h2>
+              <p className="text-zinc-500 max-w-xs">Establishing secure connection to ESP32 Gateway</p>
+              <div className="mt-4 text-[10px] text-zinc-800 uppercase tracking-widest">
+                ID: {Math.random().toString(36).substring(7)}
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div 
+              key="error"
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="flex flex-col items-center"
+            >
+              <div className="bg-red-500/10 p-4 rounded-3xl mb-6 border border-red-500/20">
+                <AlertCircle className="w-12 h-12 text-red-500" />
+              </div>
+              <h2 className="text-xl font-bold mb-2">Connection Failed</h2>
+              <p className="text-zinc-500 mb-8 max-w-xs">{error}</p>
+              <div className="flex gap-4">
+                <Button 
+                  className="bg-white/10 hover:bg-white/20 border-white/5 px-8" 
+                  onClick={() => fetchStatus()}
+                >
+                  Retry
+                </Button>
+                <Button 
+                  variant="outline"
+                  className="border-[#FF6321] text-[#FF6321] hover:bg-[#FF6321]/10 px-8"
+                  onClick={() => {
+                    // Mock data so user can see it
+                    setLoading(false);
+                    setState({
+                      relays: [
+                        { id: 1, name: "Lampu 1", status: false },
+                        { id: 2, name: "Lampu 2", status: false },
+                        { id: 3, name: "Lampu 3", status: false },
+                        { id: 4, name: "Lampu 4", status: false },
+                      ],
+                      sensors: { temperature: 0, humidity: 0, lastUpdate: new Date().toISOString() },
+                      variations: { variation1: false, variation2: false }
+                    });
+                  }}
+                >
+                  Enter Offline Mode
+                </Button>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }

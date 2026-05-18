@@ -41,12 +41,20 @@ async function startServer() {
     state.sensors.lastUpdate = new Date().toISOString();
   }, 5000);
 
+  // Health Check
+  app.get("/api/health", (req, res) => {
+    console.log("Health check requested");
+    res.json({ status: "ok" });
+  });
+
   // API Routes
   app.get("/api/status", (req, res) => {
+    console.log(`[${new Date().toISOString()}] GET /api/status - Current Status: T=${state.sensors.temperature.toFixed(1)}`);
     res.json(state);
   });
 
   app.post("/api/relay", (req, res) => {
+    console.log(`[${new Date().toISOString()}] POST /api/relay - Body:`, req.body);
     const { id, status } = req.body;
     const relay = state.relays.find((r) => r.id === id);
     if (relay) {
@@ -100,13 +108,18 @@ async function startServer() {
   });
 
   // Vite integration
-  if (process.env.NODE_ENV !== "production") {
+  const isProd = process.env.NODE_ENV === "production";
+  console.log(`[Server] Environment: ${process.env.NODE_ENV}, isProd: ${isProd}`);
+
+  if (!isProd) {
+    console.log("[Server] Mounting Vite middleware...");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
+    console.log("[Server] Serving static files from dist...");
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
