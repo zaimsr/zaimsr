@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import mqtt from "mqtt";
 import { 
   Lightbulb, 
   Thermometer, 
@@ -19,7 +20,9 @@ import {
   Sun,
   Radio,
   Zap,
-  Mic
+  Mic,
+  Wifi,
+  WifiOff
 } from "lucide-react";
 import { 
   LineChart, 
@@ -40,6 +43,12 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast, Toaster } from "sonner";
 import { Separator } from "@/components/ui/separator";
+
+// MQTT Configuration
+const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
+const TOPIC_SENSORS = "smartnode/sensors";
+const TOPIC_RELAYS_STATE = "smartnode/relays/state";
+const TOPIC_RELAYS_CMD = "smartnode/relays/command";
 
 interface Relay {
   id: number;
@@ -82,30 +91,82 @@ export default function App() {
       variation2: false,
     }
   });
+  
   const [history, setHistory] = useState<any[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [mqttStatus, setMqttStatus] = useState<"connected" | "disconnected" | "connecting">("connecting");
   const [command, setCommand] = useState("");
-  const [isDarkMode, setIsDarkMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
+  const mqttClient = useRef<mqtt.MqttClient | null>(null);
 
-  const [error, setError] = useState<string | null>(null);
-
-  // Update sensor data locally
+  // MQTT logic
   useEffect(() => {
-    const interval = setInterval(() => {
-      setState(prev => ({
-        ...prev,
-        sensors: {
-          temperature: Math.max(15, Math.min(40, prev.sensors.temperature + (Math.random() - 0.5) * 0.5)),
-          humidity: Math.max(20, Math.min(95, prev.sensors.humidity + (Math.random() - 0.5) * 1.0)),
-          lastUpdate: new Date().toISOString()
+    console.log("[MQTT] Connecting to", MQTT_BROKER);
+    const client = mqtt.connect(MQTT_BROKER, {
+      clientId: `smartnode_web_${Math.random().toString(16).substring(2, 8)}`,
+      clean: true,
+      connectTimeout: 4000,
+      reconnectPeriod: 1000,
+    });
+
+    mqttClient.current = client;
+
+    client.on("connect", () => {
+      console.log("[MQTT] Connected");
+      setMqttStatus("connected");
+      client.subscribe([TOPIC_SENSORS, TOPIC_RELAYS_STATE], (err) => {
+        if (!err) {
+          console.log("[MQTT] Subscribed to topics");
+          toast.success("Dashboard Online (MQTT Connected)");
         }
-      }));
-    }, 3000);
-    return () => clearInterval(interval);
+      });
+    });
+
+    client.on("message", (topic, message) => {
+      try {
+        const payload = JSON.parse(message.toString());
+        console.log(`[MQTT] Message from ${topic}:`, payload);
+
+        if (topic === TOPIC_SENSORS) {
+          setState(prev => ({
+            ...prev,
+            sensors: {
+              temperature: payload.temp || prev.sensors.temperature,
+              humidity: payload.hum || prev.sensors.humidity,
+              lastUpdate: new Date().toISOString()
+            }
+          }));
+        } else if (topic === TOPIC_RELAYS_STATE) {
+          setState(prev => ({
+            ...prev,
+            relays: prev.relays.map(r => {
+              const statusKey = `r${r.id}`;
+              if (payload[statusKey] !== undefined) {
+                return { ...r, status: payload[statusKey] };
+              }
+              return r;
+            })
+          }));
+        }
+      } catch (err) {
+        console.error("[MQTT] Error parsing message:", err);
+      }
+    });
+
+    client.on("close", () => {
+      setMqttStatus("disconnected");
+    });
+
+    client.on("error", (err) => {
+      console.error("[MQTT] Error:", err);
+      setMqttStatus("disconnected");
+    });
+
+    return () => {
+      client.end();
+    };
   }, []);
 
-  // Update history for graphs
+  // Update history for graphs when sensors change
   useEffect(() => {
     const newPoint = {
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -116,15 +177,29 @@ export default function App() {
   }, [state.sensors.lastUpdate]);
 
   const toggleRelay = (id: number, currentStatus: boolean) => {
+    if (mqttStatus !== "connected") {
+      toast.error("Tidak terhubung ke broker MQTT");
+      return;
+    }
+
+    const payload = JSON.stringify({ id, status: !currentStatus });
+    mqttClient.current?.publish(TOPIC_RELAYS_CMD, payload);
+    
+    // Optimistic update
     setState(prev => ({
       ...prev,
       relays: prev.relays.map(r => r.id === id ? { ...r, status: !currentStatus } : r)
     }));
-    toast.success(`Relay ${id} ${!currentStatus ? "Aktif" : "Mati"}`);
+    
+    toast.info(`Mengirim perintah: Relay ${id} ${!currentStatus ? "ON" : "OFF"}`);
   };
 
   const toggleVariation = (type: number, currentStatus: boolean) => {
     const nextStatus = !currentStatus;
+    // For variations, we can just publish individual relay commands or a special variation command
+    // Let's publish a variation command
+    mqttClient.current?.publish("smartnode/variations", JSON.stringify({ type, status: nextStatus }));
+    
     setState(prev => {
       const newVariations = { ...prev.variations, [type === 1 ? 'variation1' : 'variation2']: nextStatus };
       let newRelays = [...prev.relays];
@@ -136,7 +211,6 @@ export default function App() {
           newRelays = newRelays.map(r => ({ ...r, status: r.id % 2 === 0 }));
         }
       }
-      
       return { ...prev, relays: newRelays, variations: newVariations };
     });
     toast.success(`Variasi ${type} ${nextStatus ? "Aktif" : "Mati"}`);
@@ -146,24 +220,15 @@ export default function App() {
     if (e) e.preventDefault();
     if (!command.trim()) return;
 
-    const cmd = command.toLowerCase();
-    if (cmd.includes("nyalakan lampu")) {
-      setState(prev => ({
-        ...prev,
-        relays: prev.relays.map(r => ({ ...r, status: true }))
-      }));
-      toast.success("Semua lampu dinyalakan");
-    } else if (cmd.includes("matikan lampu")) {
-      setState(prev => ({
-        ...prev,
-        relays: prev.relays.map(r => ({ ...r, status: false }))
-      }));
-      toast.success("Semua lampu dimatikan");
-    } else {
-      toast("Perintah diterima, memproses...", {
-        icon: <MessageSquare className="w-4 h-4 ml-1" />
-      });
+    if (mqttStatus !== "connected") {
+      toast.error("Broker disconnected");
+      return;
     }
+
+    mqttClient.current?.publish("smartnode/voice", JSON.stringify({ text: command }));
+    toast("Perintah sent via MQTT", {
+      icon: <MessageSquare className="w-4 h-4 ml-1" />
+    });
     setCommand("");
   };
 
@@ -172,7 +237,7 @@ export default function App() {
     setTimeout(() => {
       setIsListening(false);
       setCommand("Nyalakan Lampu");
-      toast.info("Mendengar: 'Nyalakan Lampu'");
+      toast.info("Speech Recognized: 'Nyalakan Lampu'");
     }, 2000);
   };
 
@@ -189,12 +254,14 @@ export default function App() {
           </div>
           <div className="flex gap-3">
             <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
-              <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_#22c55e]"></div>
-              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">WiFi Connected</span>
+              <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${mqttStatus === "connected" ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : mqttStatus === "connecting" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`}></div>
+              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">
+                {mqttStatus === "connected" ? "MQTT Online" : mqttStatus === "connecting" ? "Connecting..." : "MQTT Offline"}
+              </span>
             </div>
             <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
               <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]"></div>
-              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">Bot Online</span>
+              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">Bot Bridge Ready</span>
             </div>
           </div>
         </header>
@@ -362,29 +429,17 @@ export default function App() {
             
             <div className="flex-grow space-y-3 font-mono text-[10px] overflow-hidden overflow-y-auto pr-2 custom-scrollbar">
                <div className="flex gap-3 text-zinc-500/80">
-                <span className="w-14">14:22:15</span>
-                <span className="text-blue-400 font-bold">USER</span>
-                <span className="text-zinc-400">/r1_on</span>
-              </div>
-              <div className="flex gap-3 text-green-500/90">
-                <span className="w-14">14:22:16</span>
-                <span className="text-[#FF6321] font-bold">BOT</span>
-                <span className="italic">OK: Relay 1 set to ACTIVE</span>
-              </div>
-              <div className="flex gap-3 text-zinc-500/80">
-                <span className="w-14">14:24:02</span>
-                <span className="text-blue-400 font-bold">USER</span>
-                <span className="text-zinc-400">/dht</span>
-              </div>
-              <div className="flex gap-3 text-zinc-400">
-                <span className="w-14">14:24:03</span>
-                <span className="text-[#FF6321] font-bold">BOT</span>
-                <span>DATA: T={state?.sensors.temperature.toFixed(1)}°C H={state?.sensors.humidity.toFixed(0)}%</span>
-              </div>
-              <div className="flex gap-3 text-zinc-500/80">
-                <span className="w-14">Refresh</span>
+                <span className="w-14">Live</span>
                 <span className="text-zinc-600">---</span>
-                <span className="text-zinc-600 italic">Streaming updates via WebSocket...</span>
+                <span className="text-zinc-600 italic">Connected to {MQTT_BROKER}</span>
+              </div>
+              <div className="flex gap-3 text-zinc-500/80">
+                <span className="w-14">Topic</span>
+                <span className="text-zinc-400">{TOPIC_SENSORS}</span>
+              </div>
+              <div className="flex gap-3 text-zinc-500/80">
+                <span className="w-14">Status</span>
+                <span className="text-green-500/80 italic">Streaming updates via WebSocket...</span>
               </div>
             </div>
 
