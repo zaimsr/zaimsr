@@ -65,120 +65,106 @@ interface State {
 }
 
 export default function App() {
-  const [state, setState] = useState<State | null>(null);
+  const [state, setState] = useState<State>({
+    relays: [
+      { id: 1, name: "Lampu 1", status: false },
+      { id: 2, name: "Lampu 2", status: false },
+      { id: 3, name: "Lampu 3", status: false },
+      { id: 4, name: "Lampu 4", status: false },
+    ],
+    sensors: {
+      temperature: 25.5,
+      humidity: 60.0,
+      lastUpdate: new Date().toISOString(),
+    },
+    variations: {
+      variation1: false,
+      variation2: false,
+    }
+  });
   const [history, setHistory] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [command, setCommand] = useState("");
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isListening, setIsListening] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch initial state
-  const fetchStatus = async () => {
-    console.log("[Client] Fetching status...");
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    try {
-      const response = await fetch("/api/status", { signal: controller.signal });
-      clearTimeout(timeoutId);
-
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      const data = await response.json();
-      
-      if (!data || !data.sensors) throw new Error("Invalid data received from server");
-
-      setState(data);
-      setError(null);
-      
-      // Update history for graphs
-      setHistory(prev => {
-        const newPoint = {
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          temp: data.sensors.temperature,
-          hum: data.sensors.humidity
-        };
-        const next = [...prev, newPoint].slice(-20); // Keep last 20 points
-        return next;
-      });
-      
-      setLoading(false);
-    } catch (e: any) {
-      console.error("[Client] Error fetching status:", e);
-      if (e.name === 'AbortError') {
-        setError("Request timeout. Server is slow to respond.");
-      } else {
-        setError(e.message || "Gagal terhubung ke backend");
-      }
-    }
-  };
-
+  // Update sensor data locally
   useEffect(() => {
-    fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
+    const interval = setInterval(() => {
+      setState(prev => ({
+        ...prev,
+        sensors: {
+          temperature: Math.max(15, Math.min(40, prev.sensors.temperature + (Math.random() - 0.5) * 0.5)),
+          humidity: Math.max(20, Math.min(95, prev.sensors.humidity + (Math.random() - 0.5) * 1.0)),
+          lastUpdate: new Date().toISOString()
+        }
+      }));
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  const toggleRelay = async (id: number, currentStatus: boolean) => {
-    try {
-      const response = await fetch("/api/relay", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, status: !currentStatus }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        setState(prev => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            relays: prev.relays.map(r => r.id === id ? { ...r, status: !currentStatus } : r)
-          };
-        });
-        toast.success(`${data.relay.name} ${!currentStatus ? "Aktif" : "Mati"}`);
-      }
-    } catch (error) {
-      toast.error("Gagal mengubah status relay");
-    }
+  // Update history for graphs
+  useEffect(() => {
+    const newPoint = {
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+      temp: state.sensors.temperature,
+      hum: state.sensors.humidity
+    };
+    setHistory(prev => [...prev, newPoint].slice(-20));
+  }, [state.sensors.lastUpdate]);
+
+  const toggleRelay = (id: number, currentStatus: boolean) => {
+    setState(prev => ({
+      ...prev,
+      relays: prev.relays.map(r => r.id === id ? { ...r, status: !currentStatus } : r)
+    }));
+    toast.success(`Relay ${id} ${!currentStatus ? "Aktif" : "Mati"}`);
   };
 
-  const toggleVariation = async (type: number, currentStatus: boolean) => {
-    try {
-      const response = await fetch("/api/variation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type, status: !currentStatus }),
-      });
-      const data = await response.json();
-      if (data.success) {
-        fetchStatus(); // Refresh all state
-        toast.success(`Variasi ${type} ${!currentStatus ? "Aktif" : "Mati"}`);
+  const toggleVariation = (type: number, currentStatus: boolean) => {
+    const nextStatus = !currentStatus;
+    setState(prev => {
+      const newVariations = { ...prev.variations, [type === 1 ? 'variation1' : 'variation2']: nextStatus };
+      let newRelays = [...prev.relays];
+      
+      if (nextStatus) {
+        if (type === 1) {
+          newRelays = newRelays.map(r => ({ ...r, status: r.id % 2 !== 0 }));
+        } else {
+          newRelays = newRelays.map(r => ({ ...r, status: r.id % 2 === 0 }));
+        }
       }
-    } catch (error) {
-      toast.error("Gagal mengubah variasi");
-    }
+      
+      return { ...prev, relays: newRelays, variations: newVariations };
+    });
+    toast.success(`Variasi ${type} ${nextStatus ? "Aktif" : "Mati"}`);
   };
 
-  const sendCommand = async (e?: React.FormEvent) => {
+  const sendCommand = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!command.trim()) return;
 
-    try {
-      const response = await fetch("/api/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: command }),
-      });
-      const data = await response.json();
-      toast(data.message, {
+    const cmd = command.toLowerCase();
+    if (cmd.includes("nyalakan lampu")) {
+      setState(prev => ({
+        ...prev,
+        relays: prev.relays.map(r => ({ ...r, status: true }))
+      }));
+      toast.success("Semua lampu dinyalakan");
+    } else if (cmd.includes("matikan lampu")) {
+      setState(prev => ({
+        ...prev,
+        relays: prev.relays.map(r => ({ ...r, status: false }))
+      }));
+      toast.success("Semua lampu dimatikan");
+    } else {
+      toast("Perintah diterima, memproses...", {
         icon: <MessageSquare className="w-4 h-4 ml-1" />
       });
-      if (data.state) setState(data.state);
-      setCommand("");
-    } catch (error) {
-      toast.error("Gagal mengirim perintah");
     }
+    setCommand("");
   };
 
   const handleVoiceSim = () => {
@@ -189,88 +175,6 @@ export default function App() {
       toast.info("Mendengar: 'Nyalakan Lampu'");
     }, 2000);
   };
-
-  if (loading && !state) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-screen bg-[#0A0A0C] text-white p-4 text-center">
-        <Toaster position="top-right" richColors />
-        <AnimatePresence mode="wait">
-          {!error ? (
-            <motion.div 
-              key="loading"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              className="flex flex-col items-center"
-            >
-              <div className="relative">
-                <motion.div 
-                  animate={{ rotate: 360 }}
-                  transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-                  className="mb-8"
-                >
-                  <RefreshCw className="w-16 h-16 text-[#FF6321]" />
-                </motion.div>
-                <motion.div 
-                  className="absolute inset-0 flex items-center justify-center"
-                  animate={{ scale: [1, 1.2, 1] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                >
-                  <Zap className="w-6 h-6 text-[#FF6321] opacity-50" />
-                </motion.div>
-              </div>
-              <h2 className="text-xl font-bold mb-2">Connecting to SmartNode... v2.1</h2>
-              <p className="text-zinc-500 max-w-xs">Establishing secure connection to ESP32 Gateway</p>
-              <div className="mt-4 text-[10px] text-zinc-800 uppercase tracking-widest">
-                ID: {Math.random().toString(36).substring(7)}
-              </div>
-            </motion.div>
-          ) : (
-            <motion.div 
-              key="error"
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="flex flex-col items-center"
-            >
-              <div className="bg-red-500/10 p-4 rounded-3xl mb-6 border border-red-500/20">
-                <AlertCircle className="w-12 h-12 text-red-500" />
-              </div>
-              <h2 className="text-xl font-bold mb-2">Connection Failed</h2>
-              <p className="text-zinc-500 mb-8 max-w-xs">{error}</p>
-              <div className="flex gap-4">
-                <Button 
-                  className="bg-white/10 hover:bg-white/20 border-white/5 px-8" 
-                  onClick={() => fetchStatus()}
-                >
-                  Retry
-                </Button>
-                <Button 
-                  variant="outline"
-                  className="border-[#FF6321] text-[#FF6321] hover:bg-[#FF6321]/10 px-8"
-                  onClick={() => {
-                    // Mock data so user can see it
-                    setLoading(false);
-                    setState({
-                      relays: [
-                        { id: 1, name: "Lampu 1", status: false },
-                        { id: 2, name: "Lampu 2", status: false },
-                        { id: 3, name: "Lampu 3", status: false },
-                        { id: 4, name: "Lampu 4", status: false },
-                      ],
-                      sensors: { temperature: 0, humidity: 0, lastUpdate: new Date().toISOString() },
-                      variations: { variation1: false, variation2: false }
-                    });
-                  }}
-                >
-                  Enter Offline Mode
-                </Button>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-      </div>
-    );
-  }
 
   return (
     <div className="min-h-screen bg-[#0A0A0C] text-[#E4E4E7] transition-colors duration-300 font-sans selection:bg-primary/30">
