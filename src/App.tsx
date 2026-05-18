@@ -45,10 +45,12 @@ import { toast, Toaster } from "sonner";
 import { Separator } from "@/components/ui/separator";
 
 // MQTT Configuration
+const DEVICE_ID = "8611103848"; // Using your Telegram ID as a unique prefix
 const MQTT_BROKER = "wss://broker.emqx.io:8084/mqtt";
-const TOPIC_SENSORS = "smartnode/sensors";
-const TOPIC_RELAYS_STATE = "smartnode/relays/state";
-const TOPIC_RELAYS_CMD = "smartnode/relays/command";
+const TOPIC_PREFIX = `smartnode/${DEVICE_ID}`;
+const TOPIC_SENSORS = `${TOPIC_PREFIX}/sensors`;
+const TOPIC_RELAYS_STATE = `${TOPIC_PREFIX}/relays/state`;
+const TOPIC_RELAYS_CMD = `${TOPIC_PREFIX}/relays/command`;
 
 interface Relay {
   id: number;
@@ -71,6 +73,7 @@ interface State {
   relays: Relay[];
   sensors: Sensors;
   variations: Variations;
+  deviceOnline: boolean;
 }
 
 export default function App() {
@@ -89,7 +92,8 @@ export default function App() {
     variations: {
       variation1: false,
       variation2: false,
-    }
+    },
+    deviceOnline: false
   });
   
   const [history, setHistory] = useState<any[]>([]);
@@ -97,6 +101,7 @@ export default function App() {
   const [command, setCommand] = useState("");
   const [isListening, setIsListening] = useState(false);
   const mqttClient = useRef<mqtt.MqttClient | null>(null);
+  const lastHeartbeat = useRef<number>(0);
 
   // MQTT logic
   useEffect(() => {
@@ -104,8 +109,9 @@ export default function App() {
     const client = mqtt.connect(MQTT_BROKER, {
       clientId: `smartnode_web_${Math.random().toString(16).substring(2, 8)}`,
       clean: true,
-      connectTimeout: 4000,
-      reconnectPeriod: 1000,
+      connectTimeout: 30000, // Increased to 30s
+      reconnectPeriod: 2000,
+      protocolVersion: 4,
     });
 
     mqttClient.current = client;
@@ -113,9 +119,9 @@ export default function App() {
     client.on("connect", () => {
       console.log("[MQTT] Connected");
       setMqttStatus("connected");
-      client.subscribe([TOPIC_SENSORS, TOPIC_RELAYS_STATE], (err) => {
+      client.subscribe([TOPIC_SENSORS, TOPIC_RELAYS_STATE, `${TOPIC_PREFIX}/status`], (err) => {
         if (!err) {
-          console.log("[MQTT] Subscribed to topics");
+          console.log("[MQTT] Subscribed to unique topics:", TOPIC_PREFIX);
           toast.success("Dashboard Online (MQTT Connected)");
         }
       });
@@ -124,11 +130,12 @@ export default function App() {
     client.on("message", (topic, message) => {
       try {
         const payload = JSON.parse(message.toString());
-        console.log(`[MQTT] Message from ${topic}:`, payload);
-
+        
         if (topic === TOPIC_SENSORS) {
+          lastHeartbeat.current = Date.now();
           setState(prev => ({
             ...prev,
+            deviceOnline: true,
             sensors: {
               temperature: payload.temp || prev.sensors.temperature,
               humidity: payload.hum || prev.sensors.humidity,
@@ -136,8 +143,10 @@ export default function App() {
             }
           }));
         } else if (topic === TOPIC_RELAYS_STATE) {
+          lastHeartbeat.current = Date.now();
           setState(prev => ({
             ...prev,
+            deviceOnline: true,
             relays: prev.relays.map(r => {
               const statusKey = `r${r.id}`;
               if (payload[statusKey] !== undefined) {
@@ -146,6 +155,9 @@ export default function App() {
               return r;
             })
           }));
+        } else if (topic === `${TOPIC_PREFIX}/status`) {
+          lastHeartbeat.current = Date.now();
+          setState(prev => ({ ...prev, deviceOnline: payload.status === "online" }));
         }
       } catch (err) {
         console.error("[MQTT] Error parsing message:", err);
@@ -157,12 +169,28 @@ export default function App() {
     });
 
     client.on("error", (err) => {
-      console.error("[MQTT] Error:", err);
+      console.error("[MQTT] Connection Error:", err.message);
+      setMqttStatus("disconnected");
+      if (err.message.includes("timeout")) {
+        toast.error("MQTT Timeout. Mencoba menyambung kembali...");
+      }
+    });
+
+    client.on("offline", () => {
+      console.log("[MQTT] Client Offline");
       setMqttStatus("disconnected");
     });
 
+    // Check device status periodically
+    const statusInterval = setInterval(() => {
+      if (Date.now() - lastHeartbeat.current > 15000) {
+        setState(prev => prev.deviceOnline ? { ...prev, deviceOnline: false } : prev);
+      }
+    }, 5000);
+
     return () => {
       client.end();
+      clearInterval(statusInterval);
     };
   }, []);
 
@@ -250,18 +278,20 @@ export default function App() {
         <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">SMART-NODE <span className="text-[#FF6321]">ESP32</span></h1>
-            <p className="text-xs text-zinc-500 font-mono">ID: 8749143834 | GATEWAY: 192.168.1.104</p>
+            <p className="text-xs text-zinc-500 font-mono">ID: {DEVICE_ID} | MQTT REGION: ASIA-SOUTH</p>
           </div>
           <div className="flex gap-3">
             <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
-              <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${mqttStatus === "connected" ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : mqttStatus === "connecting" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`}></div>
+              <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${state.deviceOnline ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : "bg-red-500"}`}></div>
               <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">
-                {mqttStatus === "connected" ? "MQTT Online" : mqttStatus === "connecting" ? "Connecting..." : "MQTT Offline"}
+                {state.deviceOnline ? "ESP32 Online" : "ESP32 Offline"}
               </span>
             </div>
             <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
-              <div className="w-2 h-2 rounded-full bg-blue-500 shadow-[0_0_8px_#3b82f6]"></div>
-              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">Bot Bridge Ready</span>
+              <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${mqttStatus === "connected" ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : mqttStatus === "connecting" ? "bg-yellow-500 animate-pulse" : "bg-red-500"}`}></div>
+              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">
+                {mqttStatus === "connected" ? "Dashboard Online" : mqttStatus === "connecting" ? "Connecting..." : "Dashboard Offline"}
+              </span>
             </div>
           </div>
         </header>

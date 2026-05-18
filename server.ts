@@ -19,18 +19,28 @@ async function startServer() {
   app.use(express.json());
 
   // ================= MQTT SETUP =================
+  const DEVICE_ID = "8611103848";
   const MQTT_BROKER = "mqtt://broker.emqx.io:1883";
-  const TOPIC_SENSORS = "smartnode/sensors";
-  const TOPIC_RELAYS_STATE = "smartnode/relays/state";
-  const TOPIC_RELAYS_CMD = "smartnode/relays/command";
+  const TOPIC_PREFIX = `smartnode/${DEVICE_ID}`;
+  const TOPIC_SENSORS = `${TOPIC_PREFIX}/sensors`;
+  const TOPIC_RELAYS_STATE = `${TOPIC_PREFIX}/relays/state`;
+  const TOPIC_RELAYS_CMD = `${TOPIC_PREFIX}/relays/command`;
   
   const mqttClient = mqtt.connect(MQTT_BROKER, {
     clientId: `smartnode_server_${Math.random().toString(16).substring(2, 8)}`,
+    connectTimeout: 30000,
+    reconnectPeriod: 5000,
   });
 
   mqttClient.on("connect", () => {
-    console.log("[Server] Connected to MQTT Broker:", MQTT_BROKER);
+    console.log("[Server] Connected to MQTT Broker successfully");
     mqttClient.subscribe([TOPIC_SENSORS, TOPIC_RELAYS_STATE]);
+    // Send initial status
+    mqttClient.publish(`${TOPIC_PREFIX}/status`, JSON.stringify({ status: "online", source: "server" }));
+  });
+
+  mqttClient.on("error", (err) => {
+    console.error("[Server] MQTT Client Error:", err.message);
   });
 
   // Local state mirror for AI context
@@ -57,8 +67,8 @@ async function startServer() {
 
   const askAI = async (prompt: string) => {
     try {
-      const systemPrompt = `You are a Smart Home Assistant. 
-      Current Hardware State: 
+      const systemPrompt = `You are a Smart Home Assistant for Device ID ${DEVICE_ID}. 
+      Current Hardware State (Last Known): 
       - Relays: ${JSON.stringify(state.relays)}
       - Sensors: ${JSON.stringify(state.sensors)}
       
@@ -87,6 +97,7 @@ async function startServer() {
         console.log("[Server] Direct fetch SUCCESS:", data.result.username);
       } else {
         console.error("[Server] Direct fetch FAILED:", data.description);
+        console.error("[Server] Ensure token is correct and bot is not deactivated.");
       }
     })
     .catch(err => console.error("[Server] Direct fetch ERROR:", err.message));
@@ -128,6 +139,9 @@ async function startServer() {
     const chatId = msg.chat.id;
     console.log(`[Telegram] New Message from ${chatId}: ${text}`);
 
+    // Allow user to set their own CHAT_ID if they messaged the bot
+    // (Optional: use the hardcoded one or the sender's id)
+
     // Relay Commands
     const cmdMatch = text.match(/^\/(r|lampu)(\d)_(on|off)$/);
     if (cmdMatch) {
@@ -151,7 +165,7 @@ async function startServer() {
     }
 
     if (text === "/status" || text === "/state") {
-      const msg = `=== STATUS HARWARE ===\n` +
+      const msg = `=== STATUS HARWARE (${DEVICE_ID}) ===\n` +
                   `Lampu 1: ${state.relays.r1 ? "ON" : "OFF"}\n` +
                   `Lampu 2: ${state.relays.r2 ? "ON" : "OFF"}\n` +
                   `Lampu 3: ${state.relays.r3 ? "ON" : "OFF"}\n` +
