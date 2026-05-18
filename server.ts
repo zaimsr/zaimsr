@@ -74,18 +74,43 @@ async function startServer() {
   };
 
   // ================= TELEGRAM BOT =================
-  const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8749143834:AAHvNq0RhjAiiZZBPJmsaoakIKsA4KwWYyc";
+  const rawToken = process.env.TELEGRAM_BOT_TOKEN || "8749143834:AAHvNq0RhjAiiZZBPJmsaoakIKsA4KwWYyc";
+  const BOT_TOKEN = rawToken.trim();
   const CHAT_ID = "8611103848";
 
-  // Force polling for reliability in preview environments
-  const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+  console.log(`[Server] Testing Token with direct fetch: https://api.telegram.org/bot${BOT_TOKEN.substring(0, 10)}.../getMe`);
+  
+  fetch(`https://api.telegram.org/bot${BOT_TOKEN}/getMe`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.ok) {
+        console.log("[Server] Direct fetch SUCCESS:", data.result.username);
+      } else {
+        console.error("[Server] Direct fetch FAILED:", data.description);
+      }
+    })
+    .catch(err => console.error("[Server] Direct fetch ERROR:", err.message));
 
-  console.log("[Server] Telegram Bot initialized (Polling ON)");
+  const bot = new TelegramBot(BOT_TOKEN, { polling: false });
 
-  // Startup test message to user
-  bot.sendMessage(CHAT_ID, "🚀 Server Smartnode telah aktif! Bot siap menerima perintah.").catch(err => {
-    console.error("[Server] Error sending startup message:", err.message);
-    console.log("[Server] Hint: Pastikan anda sudah menekan /start di bot telegram anda.");
+  // Clear webhook and then start polling
+  bot.deleteWebHook()
+    .then(() => {
+      console.log("[Server] Webhook cleared.");
+      return bot.startPolling();
+    })
+    .then(() => {
+      console.log("[Server] Polling started.");
+    })
+    .catch((err) => {
+      console.error("[Server] Telegram Initialization Error:", err.message);
+    });
+
+  bot.getMe().then((me) => {
+    console.log(`[Server] Telegram Bot connected successfully correctly: @${me.username}`);
+    bot.sendMessage(CHAT_ID, "🚀 Server Smartnode telah aktif! Bot siap menerima perintah.");
+  }).catch((err) => {
+    console.error("[Server] Telegram getMe failed (Invalid Token?):", err.message);
   });
 
   // Webhook endpoint (kept for compatibility but not used if polling is on)
@@ -101,6 +126,7 @@ async function startServer() {
     if (!msg.text) return;
     const text = msg.text.toLowerCase();
     const chatId = msg.chat.id;
+    console.log(`[Telegram] New Message from ${chatId}: ${text}`);
 
     // Relay Commands
     const cmdMatch = text.match(/^\/(r|lampu)(\d)_(on|off)$/);
