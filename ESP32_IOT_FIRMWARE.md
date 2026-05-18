@@ -38,10 +38,10 @@ String topic_state = baseTopic + "/relays/state";
 String topic_cmd = baseTopic + "/relays/command";
 String topic_status = baseTopic + "/status";
 
-#define RELAY1 18
-#define RELAY2 19
-#define RELAY3 21
-#define RELAY4 22
+#define RELAY1 5
+#define RELAY2 18
+#define RELAY3 19
+#define RELAY4 23
 #define DHTPIN 4
 #define DHTTYPE DHT11
 
