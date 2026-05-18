@@ -190,6 +190,15 @@ async function startServer() {
   // ================= API ROUTES =================
   app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
+  app.get("/api/status", (req, res) => {
+    res.json({
+      mqtt: mqttClient.connected ? "connected" : "disconnected",
+      telegram: bot.options.polling ? "online (polling)" : "offline",
+      deviceId: DEVICE_ID,
+      lastSeenSensors: state.sensors
+    });
+  });
+
   // ================= VITE INTEGRATION =================
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

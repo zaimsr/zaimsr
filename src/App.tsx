@@ -98,6 +98,7 @@ export default function App() {
   
   const [history, setHistory] = useState<any[]>([]);
   const [mqttStatus, setMqttStatus] = useState<"connected" | "disconnected" | "connecting">("connecting");
+  const [bridgeStatus, setBridgeStatus] = useState<"online" | "offline">("offline");
   const [command, setCommand] = useState("");
   const [isListening, setIsListening] = useState(false);
   const mqttClient = useRef<mqtt.MqttClient | null>(null);
@@ -188,9 +189,20 @@ export default function App() {
       }
     }, 5000);
 
+    // Check bridge status periodically
+    const bridgeInterval = setInterval(() => {
+      fetch("/api/status")
+        .then(r => r.json())
+        .then(data => {
+          setBridgeStatus(data.mqtt === "connected" ? "online" : "offline");
+        })
+        .catch(() => setBridgeStatus("offline"));
+    }, 5000);
+
     return () => {
       client.end();
       clearInterval(statusInterval);
+      clearInterval(bridgeInterval);
     };
   }, []);
 
@@ -281,6 +293,12 @@ export default function App() {
             <p className="text-xs text-zinc-500 font-mono">ID: {DEVICE_ID} | MQTT REGION: ASIA-SOUTH</p>
           </div>
           <div className="flex gap-3">
+            <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
+              <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${bridgeStatus === "online" ? "bg-blue-500 shadow-[0_0_8px_#3b82f6]" : "bg-red-500"}`}></div>
+              <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">
+                {bridgeStatus === "online" ? "Bridge Online" : "Bridge Offline"}
+              </span>
+            </div>
             <div className="flex items-center gap-2 bg-zinc-900 px-3 py-1.5 rounded-full border border-white/5">
               <div className={`w-2 h-2 rounded-full transition-all duration-1000 ${state.deviceOnline ? "bg-green-500 shadow-[0_0_8px_#22c55e]" : "bg-red-500"}`}></div>
               <span className="text-[10px] uppercase font-bold tracking-widest text-zinc-400">
