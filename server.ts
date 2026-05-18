@@ -77,20 +77,25 @@ async function startServer() {
   const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "8749143834:AAHvNq0RhjAiiZZBPJmsaoakIKsA4KwWYyc";
   const CHAT_ID = "8611103848";
 
-  // Use webhook if APP_URL is provided (Vercel-like), otherwise poll
-  // Note: For Vercel, this usually goes into /api/bot.ts, but here we use a single Express server.
-  const bot = new TelegramBot(BOT_TOKEN, { polling: !process.env.APP_URL });
+  // Force polling for reliability in preview environments
+  const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-  // Webhook endpoint for Telegram
+  console.log("[Server] Telegram Bot initialized (Polling ON)");
+
+  // Startup test message to user
+  bot.sendMessage(CHAT_ID, "🚀 Server Smartnode telah aktif! Bot siap menerima perintah.").catch(err => {
+    console.error("[Server] Error sending startup message:", err.message);
+    console.log("[Server] Hint: Pastikan anda sudah menekan /start di bot telegram anda.");
+  });
+
+  // Webhook endpoint (kept for compatibility but not used if polling is on)
   app.post("/api/bot", (req, res) => {
+    if (bot.options.polling) {
+      return res.status(200).send("Polling is active, ignoring webhook");
+    }
     bot.processUpdate(req.body);
     res.sendStatus(200);
   });
-
-  if (process.env.APP_URL) {
-    bot.setWebHook(`${process.env.APP_URL}/api/bot`);
-    console.log(`[Server] Telegram Webhook set to ${process.env.APP_URL}/api/bot`);
-  }
 
   const handleBotMessage = async (msg: any) => {
     if (!msg.text) return;
