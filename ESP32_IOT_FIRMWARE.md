@@ -1,134 +1,202 @@
-# ESP32 IoT Smart Home Firmware (v2.2)
+# ESP32/ESP8266 ThingsBoard IoT Firmware
 
-This firmware connects your ESP32 to the MQTT broker and integrates with the Vercel Dashboard using unique topics.
+Firmware ini digunakan untuk menghubungkan modul ESP32 atau ESP8266 Anda ke server **ThingsBoard** untuk memantau sensor DHT11/DHT22 serta mengontrol 4 channel Relay Module secara real-time.
 
-## Hardware Requirements
-- ESP32 Development Board
-- DHT11 Sensor (Data Pin connected to GPIO 4)
-- 4-Channel Relay Module (Connected to GPIO 18, 19, 21, 22)
+## Fitur Utama
+- **Deteksi Board Otomatis**: Mendukung penuh ESP32 dan ESP8266 secara plug-and-play.
+- **Sensor Telemetri**: Mengirimkan data Suhu (temperature) dan Kelembapan (humidity) ke ThingsBoard secara presisi setiap 5 detik sekali.
+- **Aktuator RPC Dual-Arah**: Mengontrol Relay 1-4 via tombol switch/widget dashboard ThingsBoard menggunakan token autentikasi yang aman.
+- **Format JSON Ringan**: Menggunakan konstruksi JSON manual yang efisien untuk meminimalkan beban memori pada board.
 
-## Unique MQTT Topics
-To avoid interference, we use your ID (**8611103848**) in the topics.
-- **Publishing (ESP32 -> Cloud):**
-  - `smartnode/8611103848/status`: `{"status": "online"}` (Every 10s)
-  - `smartnode/8611103848/sensors`: `{"temp": 28.5, "hum": 62}` (Every 5s)
-  - `smartnode/8611103848/relays/state`: `{"r1": true, "r2": false...}` (On Change)
-- **Subscribing (Cloud -> ESP32):**
-  - `smartnode/8611103848/relays/command`: `{"id": 1, "status": true}`
+---
 
-## Firmware (Arduino / ESP32)
+## Kode Firmware (Arduino C++)
 
 ```cpp
-#include <WiFi.h>
+/*
+ * =================================================================
+ * IoT Smart Control & Monitoring (ESP32 / ESP8266) to ThingsBoard
+ * Sensor: DHT22 (Temperature & Humidity)
+ * Aktuator: 4x Relay Module
+ * =================================================================
+ */
+
+// --- Deteksi Board Otomatis ---
+#if defined(ESP32)
+  #include <WiFi.h>
+  #define BOARD_TYPE "ESP32"
+  #define DHTPIN 4      // Pin Data DHT22 untuk ESP32
+  #define RELAY1 18     // Pin Relay 1 ESP32
+  #define RELAY2 19     // Pin Relay 2 ESP32
+  #define RELAY3 21     // Pin Relay 3 ESP32
+  #define RELAY4 22     // Pin Relay 4 ESP32
+#elif defined(ESP8266)
+  #include <ESP8266WiFi.h>
+  #define BOARD_TYPE "ESP8266"
+  #define DHTPIN 2      // Pin D5 (GPIO2) ESP8266
+  #define RELAY1 16     // Pin D1 (GPIO16) ESP8266
+  #define RELAY2 5     // Pin D2 (GPIO5) ESP8266
+  #define RELAY3 4     // Pin D3 (GPIO4) ESP8266
+  #define RELAY4 0     // Pin D4 (GPIO0) ESP8266
+#else
+  #error "Board tidak dikenali. Pilih ESP32 atau ESP8266!"
+#endif
+
 #include <PubSubClient.h>
 #include <DHT.h>
-#include <ArduinoJson.h>
 
-// --- CONFIGURATION ---
-const char* ssid = "YOUR_WIFI_SSID";
-const char* password = "YOUR_WIFI_PASSWORD";
-const char* mqtt_server = "broker.emqx.io";
-const int mqtt_port = 1883;
-const char* device_id = "8611103848"; // YOUR UNIQUE ID
+// --- KONFIGURASI WIFI & THINGSBOARD (WAJIB DISESUAIKAN) ---
+const char* ssid = "no connect";        // Ganti dengan SSID WiFi Anda
+const char* password = "19Hajimemasu"; // Ganti dengan Password WiFi
+const char* mqtt_server = "8611103848";
+const char* token = "8749143834:AAHvNq0RhjAiiZZBPJmsaoakIKsA4KwWYyc";    // Ganti dengan Device Token dari ThingsBoard
 
-// Topics
-String baseTopic = "smartnode/" + String(device_id);
-String topic_sensors = baseTopic + "/sensors";
-String topic_state = baseTopic + "/relays/state";
-String topic_cmd = baseTopic + "/relays/command";
-String topic_status = baseTopic + "/status";
-
-#define RELAY1 5
-#define RELAY2 18
-#define RELAY3 19
-#define RELAY4 23
-#define DHTPIN 4
+// --- Inisialisasi Sensor & Object ---
 #define DHTTYPE DHT11
-
 DHT dht(DHTPIN, DHTTYPE);
+
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-unsigned long lastMsg = 0;
-bool r1 = false, r2 = false, r3 = false, r4 = false;
+// Variabel status Relay di ThingsBoard (true = ON, false = OFF)
+bool stateR1 = false;
+bool stateR2 = false;
+bool stateR3 = false;
+bool stateR4 = false;
 
-void callback(char* topic, byte* payload, unsigned int length) {
-  String message;
-  for (int i = 0; i < length; i++) message += (char)payload[i];
-  
-  StaticJsonDocument<200> doc;
-  deserializeJson(doc, message);
-  
-  int id = doc["id"];
-  bool status = doc["status"];
+unsigned long lastSend = 0;
 
-  if (id == 1) { r1 = status; digitalWrite(RELAY1, r1 ? LOW : HIGH); }
-  if (id == 2) { r2 = status; digitalWrite(RELAY2, r2 ? LOW : HIGH); }
-  if (id == 3) { r3 = status; digitalWrite(RELAY3, r3 ? LOW : HIGH); }
-  if (id == 4) { r4 = status; digitalWrite(RELAY4, r4 ? LOW : HIGH); }
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\nMemulai Sistem IoT berbasis " + String(BOARD_TYPE));
   
-  sendState();
+  dht.begin();
+
+  // Konfigurasi Pin Relay sebagai Output
+  pinMode(RELAY1, OUTPUT);
+  pinMode(RELAY2, OUTPUT);
+  pinMode(RELAY3, OUTPUT);
+  pinMode(RELAY4, OUTPUT);
+
+  // Set default state relay ke OFF 
+  // (Asumsi relay module tipe "Active LOW". Jika "Active HIGH", ganti HIGH menjadi LOW)
+  digitalWrite(RELAY1, HIGH);
+  digitalWrite(RELAY2, HIGH);
+  digitalWrite(RELAY3, HIGH);
+  digitalWrite(RELAY4, HIGH);
+
+  setup_wifi();
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
 }
 
-void sendState() {
-  StaticJsonDocument<200> doc;
-  doc["r1"] = r1; doc["r2"] = r2; doc["r3"] = r3; doc["r4"] = r4;
-  char buf[256];
-  serializeJson(doc, buf);
-  client.publish(topic_state.c_str(), buf);
+void setup_wifi() {
+  delay(10);
+  Serial.print("\nMenghubungkan ke WiFi: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\n[WiFi Terhubung] IP: " + WiFi.localIP().toString());
 }
 
 void reconnect() {
   while (!client.connected()) {
-    String clientId = "ESP32-" + String(device_id);
-    if (client.connect(clientId.c_str())) {
-      client.subscribe(topic_cmd.c_str());
-      client.publish(topic_status.c_str(), "{\"status\":\"online\"}");
-      sendState();
+    Serial.print("Menghubungkan ke ThingsBoard...");
+    // Koneksi menggunakan Token sebagai username
+    if (client.connect(BOARD_TYPE, token, NULL)) {
+      Serial.println(" [Berhasil]");
+      // Subscribe ke antrian RPC (Remote Procedure Call) ThingsBoard
+      client.subscribe("v1/devices/me/rpc/request/+");
     } else {
+      Serial.print(" [Gagal] rc=");
+      Serial.print(client.state());
+      Serial.println(" Coba lagi dalam 5 detik...");
       delay(5000);
     }
   }
 }
 
-void setup() {
-  pinMode(RELAY1, OUTPUT); digitalWrite(RELAY1, HIGH);
-  pinMode(RELAY2, OUTPUT); digitalWrite(RELAY2, HIGH);
-  pinMode(RELAY3, OUTPUT); digitalWrite(RELAY3, HIGH);
-  pinMode(RELAY4, OUTPUT); digitalWrite(RELAY4, HIGH);
+// Fungsi untuk menangani perintah masuk (Tombol Switch) dari ThingsBoard Dashboard
+void callback(char* topic, byte* payload, unsigned int length) {
+  String topicStr = String(topic);
+  String reqId = topicStr.substring(topicStr.lastIndexOf("/") + 1);
+  String responseTopic = "v1/devices/me/rpc/response/" + reqId;
+
+  // Konversi payload ke bentuk String
+  String message = "";
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
   
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) delay(500);
+  Serial.println("Perintah diterima: " + message);
+
+  // Parsing manual tanpa library JSON tambahan agar tahan banting & tidak error beda versi
+  // --- RELAY 1 ---
+  if (message.indexOf("\"getValue1\"") > 0) {
+    client.publish(responseTopic.c_str(), stateR1 ? "true" : "false");
+  } else if (message.indexOf("\"setValue1\"") > 0) {
+    stateR1 = (message.indexOf("true") > 0);
+    digitalWrite(RELAY1, stateR1 ? LOW : HIGH); // Active LOW logic
+    client.publish(responseTopic.c_str(), stateR1 ? "true" : "false");
+  }
   
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(callback);
-  dht.begin();
+  // --- RELAY 2 ---
+  else if (message.indexOf("\"getValue2\"") > 0) {
+    client.publish(responseTopic.c_str(), stateR2 ? "true" : "false");
+  } else if (message.indexOf("\"setValue2\"") > 0) {
+    stateR2 = (message.indexOf("true") > 0);
+    digitalWrite(RELAY2, stateR2 ? LOW : HIGH);
+    client.publish(responseTopic.c_str(), stateR2 ? "true" : "false");
+  }
+
+  // --- RELAY 3 ---
+  else if (message.indexOf("\"getValue3\"") > 0) {
+    client.publish(responseTopic.c_str(), stateR3 ? "true" : "false");
+  } else if (message.indexOf("\"setValue3\"") > 0) {
+    stateR3 = (message.indexOf("true") > 0);
+    digitalWrite(RELAY3, stateR3 ? LOW : HIGH);
+    client.publish(responseTopic.c_str(), stateR3 ? "true" : "false");
+  }
+
+  // --- RELAY 4 ---
+  else if (message.indexOf("\"getValue4\"") > 0) {
+    client.publish(responseTopic.c_str(), stateR4 ? "true" : "false");
+  } else if (message.indexOf("\"setValue4\"") > 0) {
+    stateR4 = (message.indexOf("true") > 0);
+    digitalWrite(RELAY4, stateR4 ? LOW : HIGH);
+    client.publish(responseTopic.c_str(), stateR4 ? "true" : "false");
+  }
 }
 
 void loop() {
-  if (!client.connected()) reconnect();
+  if (!client.connected()) {
+    reconnect();
+  }
   client.loop();
 
   unsigned long now = millis();
-  if (now - lastMsg > 5000) {
-    lastMsg = now;
-    float t = dht.readTemperature();
-    float h = dht.readHumidity();
+  // Kirim data sensor setiap 5000 ms (5 detik)
+  if (now - lastSend > 5000) { 
+    lastSend = now;
     
-    if (!isnan(t)) {
-      StaticJsonDocument<200> doc;
-      doc["temp"] = t; doc["hum"] = h;
-      char buf[256];
-      serializeJson(doc, buf);
-      client.publish(topic_sensors.c_str(), buf);
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+
+    if (isnan(h) || isnan(t)) {
+      Serial.println("Gagal membaca sensor DHT22!");
+      return;
     }
+
+    Serial.print("Suhu: "); Serial.print(t); Serial.print(" °C | ");
+    Serial.print("Kelembapan: "); Serial.print(h); Serial.println(" %");
+
+    // Format JSON manual untuk Telemetry ThingsBoard
+    String telemetryData = "{\"temperature\":" + String(t) + ", \"humidity\":" + String(h) + "}";
+    client.publish("v1/devices/me/telemetry", telemetryData.c_str());
   }
 }
 ```
-
-## Setup Telegram Bot (Node.js or Python)
-To complete the system, you should run a Telegram Bot script (on a PC or Server) that also connects to the MQTT broker.
-
-**Telegram Logic Summary:**
-- `/r1_on` -> Publish `{"id": 1, "status": true}` to `smartnode/relays/command`
-- Subscribe to `smartnode/sensors` -> Reply with sensor data when asked.

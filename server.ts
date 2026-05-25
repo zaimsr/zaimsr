@@ -46,12 +46,15 @@ async function startServer() {
   // Local state mirror for AI context
   const state = {
     relays: { r1: false, r2: false, r3: false, r4: false },
-    sensors: { temp: 0, hum: 0 }
+    sensors: { temp: 0, hum: 0 },
+    lastSeen: 0
   };
 
   mqttClient.on("message", (topic, message) => {
     try {
       const payload = JSON.parse(message.toString());
+      state.lastSeen = Date.now();
+      
       if (topic === TOPIC_SENSORS) {
         state.sensors = { ...state.sensors, ...payload };
       } else if (topic === TOPIC_RELAYS_STATE) {
@@ -145,6 +148,9 @@ async function startServer() {
     // Relay Commands
     const cmdMatch = text.match(/^\/(r|lampu)(\d)_(on|off)$/);
     if (cmdMatch) {
+      if (Date.now() - state.lastSeen > 30000 && state.lastSeen !== 0) {
+        bot.sendMessage(chatId, "⚠️ Peringatan: ESP32 tampaknya sedang offline. Perintah mungkin tidak sampai.");
+      }
       const id = parseInt(cmdMatch[2]);
       const status = cmdMatch[3] === "on";
       mqttClient.publish(TOPIC_RELAYS_CMD, JSON.stringify({ id, status }));
